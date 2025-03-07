@@ -1,0 +1,247 @@
+/*
+
+ID |                 TEST NAME					|   TOTAL SUBTREE COST	| RANK  |
+---------------------------------------------------------------------------------
+1  | TEMP TABLE									| 0.0132982 | 7			|		|
+2  | RECURSIVE CTE								| 0.0000130 | 1			|		|  
+3  | CROSS JOIN									| 56.069200 | 8			|		|
+4  | CROSS JOIN - WITH TOP						| 0.0072591 | 5			|		|
+5  | CROSS APPLY								| 0.0076783 | 6			|		|
+6  | TABLE VALUE CONSTRUCTOR & NUMBERS TABLE	| 0.0007172 | 3			|		|
+7  | TVC - MULTIPLE CJs (EXAMPLE)				| 0.0007908 | 4			|		|
+8  | GENERATE_SERIES (SQL Server 2022+)			| 0.0001089 | 2			|		|
+
+*/
+
+/*
+---------------------------------------------------------------------------------
+									EXAMPLES
+---------------------------------------------------------------------------------
+*/
+use AdventureWorksLT2022;
+go
+
+
+/*
+TEMP TABLE
+*/
+drop table if exists #tally;
+create table #tally
+(
+	  dt date    not null
+	, dp tinyint not null
+) 
+go
+declare 
+	@start_dt date = '1/1/2024'
+  , @end_dt   date = '6/17/2024';
+
+with dates 
+as
+(
+	select dt = @start_dt
+
+	union all
+
+	select dt = dateadd(day, 1, dt)
+	from dates
+	where dt <= @end_dt
+)
+insert into #tally (dt, dp)
+	select dt, datepart(weekday, dt)
+	from dates
+	option (maxrecursion 10000);
+
+--select dt, dp from #tally where dp = 2 -- 2 -> Monday
+select 
+	monday_cnt = count(*)
+from 
+	#tally 
+where 
+	dp = 2 -- 2 -> Monday
+
+drop table if exists #tally;
+go
+
+/* 
+RECURSIVE CTE
+*/
+declare 
+	@start_dt date = '1/1/2024'
+  , @end_dt   date = '6/17/2024';
+
+with dates 
+as
+(
+	select 
+		  dt = @start_dt 
+		, dp = datepart(weekday, @start_dt)
+	
+	union all
+	
+	select 
+		  dt = dateadd(day, 1, dt)
+		, dp = datepart(weekday, dt)
+	from dates
+	where dt <= @end_dt
+)
+select 
+	monday_cnt = count(*)
+from 
+	dates
+where 
+	dp = 2 -- 2 -> Monday
+option (maxrecursion 10000);
+go
+
+/* 
+CROSS JOIN
+*/
+declare 
+	@start_dt date = '1/1/2024'
+  , @end_dt   date = '6/17/2024';
+
+select 
+	monday_cnt = count(*)
+from 
+(
+	select 
+		  dt = dateadd(day, row_number() over (order by (select null)) - 1, @start_dt)					 
+		, dp = datepart(weekday, dateadd(day, row_number() over (order by (select null)) - 1, @start_dt))
+	from  sys.objects a
+		cross join sys.objects b
+) as dates
+where 
+	dp = 2 -- 2 -> Monday
+	and dt <= @end_dt;
+go
+
+/* 
+CROSS JOIN - WITH TOP
+*/
+declare 
+	@start_dt date = '1/1/2024'
+  , @end_dt   date = '6/17/2024';
+
+select 
+	monday_cnt = count(*)
+from 
+(
+	select top (datediff(day, @start_dt, @end_dt) + 1)
+        number = row_number() over (order by (select null)) - 1 
+    from sys.objects a
+    cross join sys.objects b
+) as dates
+where 
+    datepart(weekday, dateadd(day, dates.number, @start_dt)) = 2; -- 2 -> Monday
+go
+
+/* 
+CROSS APPLY
+*/
+declare 
+	@start_dt date = '1/1/2024'
+  , @end_dt   date = '6/17/2024';
+
+select 
+	monday_cnt = count(*)
+from
+(
+	select 
+		  dp = datepart(weekday, dateadd(day, row_number() over (order by (select null)) - 1, @start_dt))
+		, day_max_cnt = datediff(day, @start_dt, @end_dt) + 1
+) as day_info
+cross apply
+(
+	select top (day_info.day_max_cnt)
+		number = row_number() over (order by (select null)) - 1 
+	from sys.objects a
+	cross join sys.objects b 
+) as s
+where datepart(weekday, dateadd(day, s.number, @start_dt)) = 2; -- 2 -> Monday
+go
+
+/* 
+TABLE VALUE CONSTRUCTOR & NUMBERS TABLE
+*/
+declare 
+	@start_dt date = '1/1/2024'
+  , @end_dt   date = '6/17/2024';
+
+with n1 (n) 
+as 
+(
+	select n from (values (1),(1),(1),(1),(1),(1),(1),(1),(1),(1),(1),(1),(1),(1),(1),(1),(1),(1),(1),(1)) as t(n)
+),
+n2 (n) 
+as
+(
+	select 1 
+	from n1			as a 
+	cross join n1	as b
+),
+n3 (n) 
+as
+(
+	select 
+		row_number() over (order by (select null)) 
+	from n2
+)
+select 
+	monday_cnt = count(*)
+from 
+    n3
+where 
+    n <= datediff(day, @start_dt, @end_dt) + 1
+    and datepart(weekday, dateadd(day, n-1, @start_dt)) = 2; -- 2 -> Monday
+go
+
+/*
+TVC - MULTIPLE CJs (EXAMPLE)
+*/
+declare 
+	@start_dt date = '1/1/2024'
+  , @end_dt   date = '6/17/2024';
+
+with digits 
+as (
+    select * from 
+	(values (0)) as d1(i) -- 1 row
+	cross join
+	(values (0),(0),(0),(0),(0)) as d2(j) -- 5 rows
+	cross join 
+	(values (0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) AS d3(k) -- now, 50 rows
+	cross join 
+	(values (0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) AS d4(l) -- now, 500 rows
+),
+numbers 
+as
+(
+    select 
+        n = row_number() over(order by (select null))
+    from digits			as d1
+    cross join digits   as d2 
+)
+select 
+	monday_cnt = count(*)
+from 
+    numbers
+where
+	n <= datediff(day, @start_dt, @end_dt) + 1
+    and datepart(weekday, dateadd(day, n-1, @start_dt)) = 2; -- 2 -> Monday
+go
+
+/* 
+GENERATE_SERIES (SQL Server 2022+)
+*/
+declare 
+	@start_dt date = '1/1/2024'
+  , @end_dt   date = '6/17/2024';
+
+select 
+	monday_cnt = count(*)
+from 
+	generate_series(1, datediff(day, @start_dt, @end_dt) + 1)
+where 
+	datepart(weekday, dateadd(day, value-1, @start_dt)) = 2;
+go
